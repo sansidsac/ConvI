@@ -16,6 +16,7 @@ __pycache__/
 
 # Data / model artifacts (large files)
 data/faiss_index/
+models/
 *.bin
 *.pt
 *.safetensors
@@ -36,3 +37,12 @@ logs/
 dist/
 build/
 *.egg-info/
+
+# Audio files (place your WAVs in audio/ — folder is tracked, files are not)
+audio/*.wav
+audio/*.mp3
+audio/*.ogg
+audio/*.flac
+audio/*.m4a
+audio/*.aac
+!audio/.gitkeep

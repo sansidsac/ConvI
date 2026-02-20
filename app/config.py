@@ -33,6 +33,17 @@ class Settings(BaseSettings):
     whisper_model_size: str = "large-v3"
     spacy_model: str = "en_core_web_sm"
 
+    # ── Speech Pipeline ──────────────────────────────────────
+    # HuggingFace token required for pyannote gated models.
+    # Without it, diarization falls back to single-speaker mode.
+    pyannote_auth_token: str = ""
+    # Force number of speakers (e.g. 2 for agent+customer). None = auto-detect.
+    diarization_num_speakers: int | None = 2
+    # SpeechBrain emotion recognition model (HuggingFace hub id)
+    emotion_model: str = "speechbrain/emotion-recognition-wav2vec2-IEMOCAP"
+    # ISO-639-1 codes of audio languages supported by the pipeline
+    supported_audio_languages: list[str] = ["en", "ml"]
+
     # ── bge-m3 ───────────────────────────────────────────────
     embedding_model: str = "BAAI/bge-m3"
 
