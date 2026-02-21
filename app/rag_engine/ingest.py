@@ -108,22 +108,33 @@ def classify_doc(filename: str) -> str:
 
 def build_index():
     logger.info("=" * 60)
-    logger.info("ConvI RAG — Starting PDF Ingestion")
+    logger.info("ConvI RAG — Starting PDF Ingestion (Append Mode)")
     logger.info("=" * 60)
 
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
 
-    # ── Clear existing index ───────────────────────────────────────────────
-    for old_file in [INDEX_PATH, METADATA_PATH]:
-        if old_file.exists():
-            old_file.unlink()
-            logger.info(f"🗑️  Cleared old file: {old_file.name}")
+    # ── Load existing index and metadata ───────────────────────────────────
+    existing_metadata = []
+    existing_sources = set()
+    existing_index = None
+    
+    if METADATA_PATH.exists():
+        with open(METADATA_PATH, "r", encoding="utf-8") as f:
+            existing_metadata = json.load(f)
+            existing_sources = {m["source"] for m in existing_metadata}
+        logger.info(f"📂 Loaded existing metadata: {len(existing_metadata)} chunks from {len(existing_sources)} sources")
+    
+    if INDEX_PATH.exists():
+        existing_index = faiss.read_index(str(INDEX_PATH))
+        logger.info(f"📂 Loaded existing FAISS index: {existing_index.ntotal} vectors")
 
-    # 1. Collect all chunks + metadata from all PDFs
-    all_chunks: list[str] = []
-    metadata:   list[dict] = []
+    # 1. Collect chunks from NEW PDFs only
+    new_chunks: list[str] = []
+    new_metadata: list[dict] = []
+    next_chunk_id = len(existing_metadata)
 
     pdf_files = sorted(DATA_SOURCE.glob("*.pdf"))
+    
     if not pdf_files:
         logger.error(f"No PDF files found in {DATA_SOURCE}")
         return
@@ -131,6 +142,10 @@ def build_index():
     logger.info(f"Found {len(pdf_files)} PDF(s): {[f.name for f in pdf_files]}")
 
     for pdf_path in pdf_files:
+        if pdf_path.name in existing_sources:
+            logger.info(f"⏭️  Skipping (already indexed): {pdf_path.name}")
+            continue
+
         doc_type = classify_doc(pdf_path.name)
         logger.info(f"📄 Processing [{doc_type}]: {pdf_path.name}")
 
@@ -144,25 +159,27 @@ def build_index():
             cleaned = clean_text(page_data["text"])
             chunks = chunk_text(cleaned)
             for chunk in chunks:
-                all_chunks.append(chunk)
-                metadata.append({
-                    "chunk_id": len(metadata),
+                new_chunks.append(chunk)
+                new_metadata.append({
+                    "chunk_id": next_chunk_id,
                     "source":   pdf_path.name,
                     "doc_type": doc_type,
                     "page":     page_data["page"],
                     "text":     chunk,
                 })
+                next_chunk_id += 1
                 doc_chunks += 1
 
-        logger.info(f"  → {len(pages)} pages, {doc_chunks} chunks")
+        logger.info(f"  → {len(pages)} page(s), {doc_chunks} new chunk(s)")
 
-    logger.info(f"\n📦 Total chunks to embed: {len(all_chunks)}")
+    logger.info(f"\n📦 New chunks to embed: {len(new_chunks)}")
 
-    if not all_chunks:
-        logger.error("No chunks created — check PDF content.")
+
+    if not new_chunks:
+        logger.info("✅ No new files to process — index is up to date!")
         return
 
-    # 2. Embed all chunks with bge-m3
+    # 2. Embed only NEW chunks with bge-m3
     logger.info(f"\n🤖 Loading embedding model: {EMBEDDING_MODEL}")
     model = FlagModel(
         EMBEDDING_MODEL,
@@ -171,30 +188,42 @@ def build_index():
         query_instruction_for_retrieval="Represent this banking document chunk:",
     )
 
-    logger.info("⚙️  Embedding chunks in batches of 8 (CPU — please wait)...")
+    logger.info("⚙️  Embedding new chunks in batches of 8 (CPU — please wait)...")
     BATCH_SIZE = 8
-    all_embeddings = []
-    batches = [all_chunks[i:i+BATCH_SIZE] for i in range(0, len(all_chunks), BATCH_SIZE)]
+    new_embeddings = []
+    batches = [new_chunks[i:i+BATCH_SIZE] for i in range(0, len(new_chunks), BATCH_SIZE)]
     for batch in tqdm(batches, desc="Embedding", unit="batch"):
         batch_emb = model.encode(batch)
-        all_embeddings.append(np.array(batch_emb, dtype=np.float32))
-    embeddings = np.vstack(all_embeddings).astype(np.float32)
-    logger.info(f"✅ Embeddings shape: {embeddings.shape}")
+        new_embeddings.append(np.array(batch_emb, dtype=np.float32))
+    new_embeddings_array = np.vstack(new_embeddings).astype(np.float32)
+    logger.info(f"✅ New embeddings shape: {new_embeddings_array.shape}")
 
-    # 3. Build FAISS index (Inner Product on normalized vectors = cosine)
-    dim = embeddings.shape[1]
-    index = faiss.IndexFlatIP(dim)
-    index.add(embeddings)
-    logger.info(f"✅ FAISS index built — {index.ntotal} vectors, dim={dim}")
+    # 3. Create or append to FAISS index
+    dim = new_embeddings_array.shape[1]
+    
+    if existing_index is None:
+        # Create new index
+        index = faiss.IndexFlatIP(dim)
+        index.add(new_embeddings_array)
+        logger.info(f"✅ FAISS index created — {index.ntotal} vectors, dim={dim}")
+    else:
+        # Append to existing index
+        index = existing_index
+        index.add(new_embeddings_array)
+        logger.info(f"✅ FAISS index appended — now {index.ntotal} vectors, dim={dim}")
 
-    # 4. Save index + metadata
+    # 4. Save updated index + metadata
     faiss.write_index(index, str(INDEX_PATH))
+    
+    # Combine old and new metadata
+    combined_metadata = existing_metadata + new_metadata
     with open(METADATA_PATH, "w", encoding="utf-8") as f:
-        json.dump(metadata, f, ensure_ascii=False, indent=2)
+        json.dump(combined_metadata, f, ensure_ascii=False, indent=2)
+
 
     logger.success(f"\n🎉 Ingestion complete!")
-    logger.success(f"   FAISS index  → {INDEX_PATH}")
-    logger.success(f"   Metadata     → {METADATA_PATH} ({len(metadata)} chunks)")
+    logger.success(f"   FAISS index  → {INDEX_PATH} ({index.ntotal} total vectors)")
+    logger.success(f"   Metadata     → {METADATA_PATH} ({len(combined_metadata)} total chunks)")
 
 
 if __name__ == "__main__":
