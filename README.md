@@ -8,6 +8,12 @@ ConvI is an **enterprise-grade, local-first** multimodal conversation intelligen
 
 ---
 
+## Architecture
+
+![ConvI Architecture](docs/architecture.jpeg)
+
+---
+
 ## Quick Start
 
 ```bash
