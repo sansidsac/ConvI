@@ -17,12 +17,12 @@ services:
     restart: unless-stopped
 
     environment:
-      POSTGRES_USER:     convi_user
+      POSTGRES_USER: convi_user
       POSTGRES_PASSWORD: password
-      POSTGRES_DB:       convi
+      POSTGRES_DB: convi
 
     ports:
-      - "5432:5432"        # host:container
+      - "5432:5432" # host:container
 
     volumes:
       - convi_pgdata:/var/lib/postgresql/data

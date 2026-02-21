@@ -34,8 +34,9 @@ from app.schemas import (
 )
 
 # ── Ollama config ─────────────────────────────────────────────────────────────
-OLLAMA_URL   = "http://localhost:11434"
-OLLAMA_MODEL = "qwen2.5:7b"
+import os as _os
+OLLAMA_URL   = _os.getenv("OLLAMA_URL",   "http://localhost:11434")
+OLLAMA_MODEL = _os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
 TIMEOUT      = 180.0  # seconds — larger prompts need more time
 OLLAMA_CTX   = 8192   # context window tokens (default 2048 is too small for RAG prompts)
 
