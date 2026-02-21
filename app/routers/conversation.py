@@ -157,3 +157,157 @@ async def analyze_text(
         input_type=InputType.text,
         domain=domain,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FULL ANALYTICS ENDPOINT — RAG + LLM + Storage
+# Accepts audio OR text, runs the complete intelligence pipeline and returns
+# the full ConversationAnalyticsResponse (summary, intent, compliance, risk, etc.)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@router.post(
+    "/analyze",
+    response_model="ConversationAnalyticsResponse",
+    summary="Full conversation intelligence (audio or text)",
+    description=(
+        "Submit either an **audio file** (WAV/MP3) or a **text transcript**. "
+        "Runs the complete pipeline: speech/text processing → conversation "
+        "normalization → RAG retrieval → local LLM reasoning → analytics. "
+        "Returns full structured banking intelligence JSON."
+    ),
+    status_code=status.HTTP_200_OK,
+)
+async def analyze_conversation(
+    audio_file: Optional[UploadFile] = File(
+        default=None,
+        description="Audio recording (WAV preferred). Multi-speaker supported.",
+    ),
+    text_transcript: Optional[str] = Form(
+        default=None,
+        description="Raw text transcript (used when no audio file is provided).",
+    ),
+    domain: str = Form(default="financial_banking"),
+    session_id: Optional[str] = Form(default=None),
+    settings: Settings = Depends(get_settings),
+):
+    from app.schemas import ConversationAnalyticsResponse
+
+    # ── 0. Validate input ─────────────────────────────────────────────────
+    if audio_file is None and not text_transcript:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Provide either 'audio_file' or 'text_transcript'.",
+        )
+
+    session    = session_id or str(uuid.uuid4())
+    input_type = InputType.audio if audio_file else InputType.text
+    logger.info(f"[{session}] ▶ FULL ANALYZE {input_type.value.upper()} | domain={domain}")
+
+    # ── Lazy imports ──────────────────────────────────────────────────────
+    from app.conversation_normalizer import (
+        normalize_from_speech,
+        normalize_from_text,
+        turns_to_dialogue_string,
+    )
+    from app.rag_engine import retriever as rag_retriever
+    from app.llm_engine import run_llm_analysis
+    from app import storage
+
+    # ── 1a. AUDIO PATH ────────────────────────────────────────────────────
+    turns = []
+    if input_type == InputType.audio:
+        tmp_path: Optional[Path] = None
+        try:
+            tmp_path = await save_upload_to_temp(audio_file)
+            logger.info(f"[{session}] Audio saved → {tmp_path}")
+            speech_segments = await run_speech_pipeline_async(
+                audio_path=tmp_path,
+                forced_language=None,
+            )
+            turns = normalize_from_speech(speech_segments)
+        except Exception as e:
+            logger.error(f"[{session}] Speech pipeline failed: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Speech pipeline error: {str(e)}",
+            )
+        finally:
+            if tmp_path:
+                delete_temp_file(tmp_path)
+
+    # ── 1b. TEXT PATH ─────────────────────────────────────────────────────
+    else:
+        # Use the text_pipeline parser if available, fall back to normalizer
+        try:
+            raw_turns   = parse_transcript(text_transcript)
+            segments    = text_turns_to_speech_segments(raw_turns)
+            turns       = normalize_from_speech(segments)
+        except Exception:
+            turns = normalize_from_text(text_transcript, language="en")
+
+    if not turns:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No conversation content could be extracted from the input.",
+        )
+    logger.info(f"[{session}] {len(turns)} turns normalized.")
+
+    # ── 2. RAG Retrieval ──────────────────────────────────────────────────
+    dialogue_str = turns_to_dialogue_string(turns)
+    rag_query    = " ".join(t.normalized_text_en for t in turns)[:1000]
+    try:
+        if not rag_retriever.is_ready:
+            rag_retriever.load()
+        rag_result = rag_retriever.retrieve(rag_query)
+        logger.info(f"[{session}] RAG: {len(rag_result['rag_context_chunks'])} chunks.")
+    except Exception as e:
+        logger.warning(f"[{session}] RAG failed (non-fatal): {e}")
+        rag_result = {"rag_context_chunks": [], "policy_references": []}
+
+    # ── 3. LLM Analysis ───────────────────────────────────────────────────
+    try:
+        analysis = run_llm_analysis(
+            turns=turns,
+            rag_result=rag_result,
+            domain=domain,
+            dialogue_str=dialogue_str,
+        )
+    except RuntimeError as e:
+        logger.error(f"[{session}] LLM error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(e),
+        )
+
+    # ── 4. Storage (non-fatal) ────────────────────────────────────────────
+    storage.save_session(
+        session_id=session,
+        domain=domain,
+        input_type=input_type.value,
+        risk_score=analysis["risk_score"],
+        escalation_level=analysis["escalation_level"].value,
+        call_outcome=analysis["basic_conversational_analysis"].call_outcome,
+    )
+    storage.save_turns(session, turns)
+    storage.save_analytics(session, analysis)
+    storage.log_event(session, "analyze_complete", f"risk={analysis['risk_score']}")
+
+    logger.info(
+        f"[{session}] ✅ Done | risk={analysis['risk_score']} "
+        f"| escalation={analysis['escalation_level'].value}"
+    )
+
+    # ── 5. Response ───────────────────────────────────────────────────────
+    return ConversationAnalyticsResponse(
+        session_id=session,
+        input_type=input_type,
+        domain=domain,
+        conversation_timeline=turns,
+        basic_conversational_analysis=analysis["basic_conversational_analysis"],
+        rag_based_analysis=analysis["rag_based_analysis"],
+        timeline_analysis=analysis["timeline_analysis"],
+        agent_performance_analysis=analysis["agent_performance_analysis"],
+        confidence_scores=analysis["confidence_scores"],
+        risk_score=analysis["risk_score"],
+        escalation_level=analysis["escalation_level"],
+    )
