@@ -44,7 +44,11 @@ def _load_model():
     if _WHISPER_MODEL is not None:
         return _WHISPER_MODEL
 
-    model_size = os.getenv("WHISPER_MODEL_SIZE", "large-v3")
+    try:
+        from app.config import get_settings
+        model_size = get_settings().whisper_model_size
+    except Exception:
+        model_size = os.getenv("WHISPER_MODEL_SIZE", "large-v3")
 
     try:
         from faster_whisper import WhisperModel

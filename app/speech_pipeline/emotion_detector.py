@@ -54,6 +54,20 @@ _patch_transformers()
 
 import torch
 import torchaudio
+
+# ── torchaudio 2.x patch applied immediately after import ─────────────────
+# SpeechBrain's core.py calls torchaudio.list_audio_backends() at import time.
+# We must patch the live module object NOW, before any `import speechbrain`.
+import warnings as _w
+_w.filterwarnings("ignore", message="torchcodec is not installed")
+_w.filterwarnings("ignore", category=UserWarning, module="speechbrain")
+if not hasattr(torchaudio, "list_audio_backends"):
+    torchaudio.list_audio_backends = lambda: ["soundfile"]
+if not hasattr(torchaudio, "get_audio_backend"):
+    torchaudio.get_audio_backend = lambda: "soundfile"
+if not hasattr(torchaudio, "set_audio_backend"):
+    torchaudio.set_audio_backend = lambda _b: None
+
 from loguru import logger
 
 from app.speech_pipeline.schemas import DiarizedSegment, EmotionResult, TranscribedSegment
@@ -62,6 +76,7 @@ from app.speech_pipeline.schemas import DiarizedSegment, EmotionResult, Transcri
 _MODEL_NAME    = "speechbrain/emotion-recognition-wav2vec2-IEMOCAP"
 _TARGET_SR     = 16_000   # model expects 16 kHz
 _MIN_DURATION  = 0.5      # seconds — skip segments shorter than this
+
 
 # Map SpeechBrain IEMOCAP codes → human-readable labels
 _LABEL_MAP = {
@@ -88,9 +103,7 @@ def _load_classifier():
     try:
         from speechbrain.inference.interfaces import foreign_class
 
-        logger.info(
-            f"[EmotionDetector] Loading '{_MODEL_NAME}' on CPU …"
-        )
+        logger.info(f"[EmotionDetector] Loading '{_MODEL_NAME}' on CPU …")
         # SpeechBrain downloads to ~/.cache/huggingface on first run
         classifier = foreign_class(
             source=_MODEL_NAME,
