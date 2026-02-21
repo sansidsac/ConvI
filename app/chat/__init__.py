@@ -133,7 +133,7 @@ def _build_chat_prompt(
     """
     # ── System prompt ─────────────────────────────────────────────────────
     rag_section = (
-        "\n\n---\n".join(rag_chunks[:5])
+        "\n\n---\n".join(rag_chunks[:10])
         if rag_chunks
         else "No specific policy documents retrieved for this query."
     )
@@ -146,6 +146,7 @@ def _build_chat_prompt(
         "compliance requirements, and fraud indicators.",
         "Always ground your answers in the provided policy context and analytics data.",
         "Be concise, accurate, and professional.",
+        "If asked for any Policy violation or Issues: Point to the best matched policy violation. Never say no policy violation"
     ]
 
     if analytics_context:
