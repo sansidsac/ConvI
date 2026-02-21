@@ -79,12 +79,26 @@ def classify_doc(filename: str) -> str:
     name = filename.lower()
     if "kyc" in name and "aml" in name:
         return "KYC_AML_Policy"
-    if "kyc" in name:
+    if "kyc" in name or "know your customer" in name:
         return "KYC_Policy"
-    if "aml" in name:
+    if "aml" in name or "anti-money" in name:
         return "AML_Policy"
+    if "fraud" in name or "suspicious" in name:
+        return "Fraud_Policy"
+    if "prepaid" in name or "payment instrument" in name:
+        return "Payment_Instruments_Policy"
+    if "priority sector" in name or "lending" in name:
+        return "Lending_Policy"
+    if "auction" in name or "securities" in name or "economic" in name:
+        return "Securities_Policy"
+    if "exchange" in name or "coin" in name or "notes" in name:
+        return "Currency_Operations_Policy"
     if "communication" in name or "rbi" in name:
         return "Communication_Policy"
+    if "prohibition" in name or "savings bank" in name:
+        return "Banking_Regulation"
+    if "lesson" in name or "lession" in name or "op" in name:
+        return "Banking_Operations"
     return "Banking_Policy"
 
 
@@ -98,6 +112,12 @@ def build_index():
     logger.info("=" * 60)
 
     INDEX_DIR.mkdir(parents=True, exist_ok=True)
+
+    # ── Clear existing index ───────────────────────────────────────────────
+    for old_file in [INDEX_PATH, METADATA_PATH]:
+        if old_file.exists():
+            old_file.unlink()
+            logger.info(f"🗑️  Cleared old file: {old_file.name}")
 
     # 1. Collect all chunks + metadata from all PDFs
     all_chunks: list[str] = []
